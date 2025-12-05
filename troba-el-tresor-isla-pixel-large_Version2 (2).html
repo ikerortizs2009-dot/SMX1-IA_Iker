@@ -1,0 +1,619 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Troba el tresor - Isla Pixel (Grande)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root { --bg:#0b3b5c; --water1:#0277bd; --water2:#039be5; --sand:#f4d58d; --grass:#7bb661; --rock:#6b6b6b; --tree:#2e7d32; --ui-bg: rgba(255,255,255,0.95); }
+  html,body{height:100%;margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:#fff}
+  #wrap{width:min(1200px,96%);margin:14px auto;text-align:center}
+  h2{margin:6px 0 8px}
+  /* Canvas aumentado - pixel art grande */
+  canvas{background:#000; display:block; margin:0 auto; image-rendering: pixelated; border:6px solid #063048; border-radius:8px; width:100%; max-width:1152px; height:auto;}
+  #hud{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:10px;background:var(--ui-bg);color:#022; padding:8px;border-radius:8px}
+  #hud .left, #hud .right{display:flex;align-items:center;gap:10px}
+  button{padding:8px 12px;border-radius:6px;border:1px solid #555;background:#fff;cursor:pointer}
+  .small{font-size:0.95rem;color:#013}
+  /* Mobile controls */
+  .touch-controls{margin-top:12px;display:flex;justify-content:center;gap:18px;flex-wrap:wrap}
+  .dir-pad{display:grid;grid-template-columns:repeat(3,72px);grid-template-rows:repeat(2,54px);gap:8px}
+  .btn-dir{width:72px;height:54px;border-radius:8px;background:#fff;border:1px solid #444;display:flex;align-items:center;justify-content:center;color:#022;font-weight:700;user-select:none;font-size:20px}
+  @media (max-width:540px){ .btn-dir{width:56px;height:42px} canvas{width:100%} }
+
+  /* Level overlay (big) */
+  .level-overlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+    background: rgba(2,6,12,0.7);
+  }
+  .level-panel {
+    background: linear-gradient(180deg,#fffefc,#f6f6f6);
+    color: #052a2a;
+    border-radius: 12px;
+    padding: 22px 28px;
+    text-align: center;
+    box-shadow: 0 18px 60px rgba(0,0,0,0.6);
+    max-width: 680px;
+    width: min(95%, 680px);
+  }
+  .level-panel h1 { margin: 0 0 8px; font-size: 2rem; color:#1565c0; }
+  .level-panel p { margin: 6px 0 14px; font-weight:700; color:#045a4d; }
+  .level-panel .big-treasure {
+    width: 120px; height: 80px; margin: 8px auto 16px; position: relative;
+  }
+  .level-panel .btns { display:flex; gap:10px; justify-content:center; margin-top:8px; }
+  .btn-continue { background:#1565c0; color:#fff; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:800; }
+  .btn-menu { background:#fff; color:#032; border:1px solid rgba(0,0,0,0.08); padding:10px 12px; border-radius:8px; cursor:pointer; font-weight:700; }
+</style>
+</head>
+<body>
+<div id="wrap" style="position:relative;">
+  <h2>Troba el tresor — Isla Pixel (Grande)</h2>
+  <p style="font-style:italic;color:#dff3ff;margin:0 0 8px">
+    Versión con tamaño aumentado: canvas y "pixels" más grandes para mejor visibilidad.
+  </p>
+
+  <!-- Canvas aumentado (resolución interna mayor) -->
+  <canvas id="game" width="1152" height="768" aria-label="Canvas del juego Troba el tresor en isla pixel grande"></canvas>
+
+  <!-- Level overlay displayed when treasure found -->
+  <div id="levelOverlay" class="level-overlay" aria-hidden="true">
+    <div class="level-panel" role="dialog" aria-modal="true" aria-labelledby="levelTitle">
+      <h1 id="levelTitle">¡Has encontrado el tesoro!</h1>
+      <div class="big-treasure" aria-hidden="true">
+        <!-- simple drawn chest (CSS fallback if canvas disabled) -->
+        <svg width="120" height="80" viewBox="0 0 120 80" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="26" width="108" height="44" fill="#e6b800" stroke="#7f5e00" stroke-width="3" rx="6" />
+          <rect x="6" y="16" width="108" height="22" fill="#c28e17" stroke="#7f5e00" stroke-width="2" rx="6" />
+          <rect x="54" y="36" width="12" height="18" fill="#3b2a00" rx="2" />
+        </svg>
+      </div>
+      <p id="levelMsg">Nivel completado</p>
+      <div class="btns">
+        <button id="continueBtn" class="btn-continue">Continuar (Siguiente Nivel)</button>
+        <button id="menuBtn" class="btn-menu">Volver al menú</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="hud" role="region" aria-label="Estadísticas">
+    <div class="left">
+      <div id="info" class="small">Controles: flechas / táctil</div>
+      <div id="stats" class="small" style="margin-left:10px">Nivel: <strong id="level">1</strong> · Tiempo: <span id="time">0.0</span>s · Movs: <span id="moves">0</span></div>
+    </div>
+    <div class="right">
+      <div class="small">Vidas: <span id="lives">3</span></div>
+      <div style="margin-left:8px">
+        <span id="message" style="font-weight:700;color:#063"></span>
+      </div>
+      <button id="restartBtn" style="margin-left:10px">Reinicia</button>
+    </div>
+  </div>
+
+  <div class="touch-controls" aria-hidden="false" style="margin-bottom:14px">
+    <div class="dir-pad" id="touchPad" role="group" aria-label="Controles táctiles">
+      <div style="visibility:hidden"></div>
+      <div class="btn-dir" data-dir="up">↑</div>
+      <div style="visibility:hidden"></div>
+      <div class="btn-dir" data-dir="left">←</div>
+      <div class="btn-dir" data-dir="down">↓</div>
+      <div class="btn-dir" data-dir="right">→</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/*
+  Isla Pixel - versión con niveles y overlay grande al encontrar el tesoro.
+  - Añadido sistema de niveles (más enemigos/obstáculos por nivel).
+  - Overlay grande que informa "¡Has encontrado el tesoro!" y permite continuar al siguiente nivel.
+  - Mantiene la jugabilidad original.
+*/
+
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  // TILE & ESCALA
+  const tileSize = 24;
+  const cols = Math.floor(canvas.width / tileSize);
+  const rows = Math.floor(canvas.height / tileSize);
+
+  // MAP
+  const map = new Uint8Array(cols * rows);
+
+  // Game objects
+  const player = { size: Math.max(12, tileSize - 6), speed: Math.max(2, Math.floor(tileSize / 8)), x: 0, y: 0 };
+  const treasure = { size: Math.max(12, tileSize - 6), x: 0, y: 0 };
+  const obstacles = [];
+  let enemies = [];
+
+  // State
+  let keys = {};
+  let moves = 0;
+  let startTime = 0;
+  let gameOver = false;
+  let lives = 3;
+  let messageTimer = 0;
+
+  // Level state
+  let level = 1;
+  let paused = false; // paused when overlay visible (between levels)
+
+  // Helpers
+  function idx(cx,cy){ return cy*cols + cx; }
+  function inBounds(cx,cy){ return cx>=0 && cy>=0 && cx<cols && cy<rows; }
+
+  // 1) Generate island
+  function generateIsland(){
+    const cx = cols/2;
+    const cy = rows/2;
+    const radius = Math.min(cols, rows) * 0.38;
+    for (let y=0;y<rows;y++){
+      for (let x=0;x<cols;x++){
+        const dx = x - cx;
+        const dy = y - cy;
+        const d = Math.sqrt(dx*dx + dy*dy);
+        const jitter = Math.sin(x*0.7 + y*0.4) * 1.6 + (Math.random()*1.4 - 0.7);
+        const threshold = radius + jitter;
+        if (d < threshold - 3) {
+          map[idx(x,y)] = 2; // grass
+        } else if (d < threshold + 2.2) {
+          map[idx(x,y)] = 1; // sand
+        } else {
+          map[idx(x,y)] = 0; // water
+        }
+      }
+    }
+  }
+
+  // 2) Place obstacles with scaling by level
+  function placeObstacles(){
+    obstacles.length = 0;
+    const possible = [];
+    for (let y=1;y<rows-1;y++){
+      for (let x=1;x<cols-1;x++){
+        const t = map[idx(x,y)];
+        if ((t===1 || t===2) && distanceToPlayerTile(x,y) > 4) possible.push({x,y});
+      }
+    }
+    shuffleArray(possible);
+    // scale obstacles by level (slightly more each level)
+    const baseFactor = 0.06;
+    const maxObstacles = Math.min(possible.length, Math.floor(possible.length * (baseFactor + 0.02 * (level - 1))) + 8);
+    for (let i=0;i<maxObstacles && i<possible.length;i++){
+      const p = possible[i];
+      if (Math.random() < 0.48) {
+        map[idx(p.x,p.y)] = 3; // rock
+      } else {
+        map[idx(p.x,p.y)] = 4; // tree
+      }
+      obstacles.push({x:p.x,y:p.y});
+    }
+  }
+
+  function distanceToPlayerTile(tx,ty){
+    const px = Math.floor(player.x / tileSize);
+    const py = Math.floor(player.y / tileSize);
+    const dx = px - tx, dy = py - ty;
+    return Math.sqrt(dx*dx + dy*dy);
+  }
+
+  // 3) Place treasure (not too close)
+  function placeTreasure(){
+    const landTiles = [];
+    for (let y=1;y<rows-1;y++){
+      for (let x=1;x<cols-1;x++){
+        const t = map[idx(x,y)];
+        if ((t===1 || t===2) && t!==3 && t!==4) {
+          const d = Math.sqrt((x - playerTileX())**2 + (y - playerTileY())**2);
+          if (d > 8) landTiles.push({x,y});
+        }
+      }
+    }
+    shuffleArray(landTiles);
+    if (landTiles.length === 0) {
+      // fallback: center
+      treasure.x = Math.floor(cols/2) * tileSize + Math.floor((tileSize - treasure.size)/2);
+      treasure.y = Math.floor(rows/2) * tileSize + Math.floor((tileSize - treasure.size)/2);
+      return;
+    }
+    // choose tile - bias further tiles as level increases
+    let index = 0;
+    if (level > 1) {
+      // pick a tile further in list occasionally
+      index = Math.min(landTiles.length-1, Math.floor(Math.random() * landTiles.length * Math.min(1, 0.25 + level*0.08)));
+    } else {
+      index = 0;
+    }
+    const tile = landTiles[index];
+    treasure.x = tile.x * tileSize + Math.floor((tileSize - treasure.size)/2);
+    treasure.y = tile.y * tileSize + Math.floor((tileSize - treasure.size)/2);
+  }
+
+  // 4) Spawn enemies scaled by level
+  function spawnEnemies(){
+    enemies = [];
+    // base count plus level scaling
+    const baseEnemies = 3 + Math.floor(Math.min(cols,rows) / 18);
+    const enemyCount = Math.max(1, baseEnemies + (level - 1));
+    const possible = [];
+    for (let y=1;y<rows-1;y++){
+      for (let x=1;x<cols-1;x++){
+        const t = map[idx(x,y)];
+        if ((t===1 || t===2) && t!==3 && t!==4) {
+          const d = Math.sqrt((x - playerTileX())**2 + (y - playerTileY())**2);
+          if (d > 10) possible.push({x,y});
+        }
+      }
+    }
+    shuffleArray(possible);
+    for (let i=0;i<Math.min(enemyCount, possible.length); i++){
+      const p = possible[i];
+      const speedScale = 1 + (level - 1) * 0.08; // enemies get slightly faster each level
+      enemies.push({
+        x: p.x * tileSize + 2,
+        y: p.y * tileSize + 2,
+        w: Math.max(12, tileSize - 6),
+        h: Math.max(12, tileSize - 6),
+        vx: (Math.random()*2 - 1) * 0.9,
+        vy: (Math.random()*2 - 1) * 0.9,
+        speed: (0.5 + Math.random() * 0.9) * speedScale,
+        cooldown: Math.random()*2
+      });
+    }
+  }
+
+  // Utilities
+  function shuffleArray(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } }
+  function playerTileX(){ return Math.floor(player.x / tileSize); }
+  function playerTileY(){ return Math.floor(player.y / tileSize); }
+
+  // Collision: rect vs solid tiles
+  function rectCollidesSolid(rx,ry,rw,rh){
+    const x0 = Math.floor(rx / tileSize);
+    const y0 = Math.floor(ry / tileSize);
+    const x1 = Math.floor((rx + rw - 1) / tileSize);
+    const y1 = Math.floor((ry + rh - 1) / tileSize);
+    for (let ty = y0; ty <= y1; ty++){
+      for (let tx = x0; tx <= x1; tx++){
+        if (!inBounds(tx,ty)) return true;
+        const t = map[idx(tx,ty)];
+        if (t === 0) return true; // water solid
+        if (t === 3 || t === 4) return true; // rock/tree solid
+      }
+    }
+    return false;
+  }
+
+  // Init / Restart: if resetLevel true set back to level 1
+  function resetGame(resetLevel = true){
+    if (resetLevel) level = 1;
+    generateIsland();
+    placeObstacles();
+    // place player on a left sand tile
+    let placed = false;
+    for (let x=2; x<cols; x++){
+      for (let y=2; y<rows-2; y++){
+        const t = map[idx(x,y)];
+        if (t === 1) {
+          player.x = x * tileSize + 2;
+          player.y = y * tileSize + 2;
+          placed = true; break;
+        }
+      }
+      if (placed) break;
+    }
+    if (!placed) { player.x = Math.floor(cols/2) * tileSize; player.y = Math.floor(rows/2) * tileSize; }
+    placeTreasure();
+    spawnEnemies();
+    moves = 0;
+    lives = 3;
+    gameOver = false;
+    paused = false;
+    messageTimer = 0;
+    document.getElementById('message').textContent = '';
+    document.getElementById('lives').textContent = lives;
+    document.getElementById('moves').textContent = moves;
+    document.getElementById('level').textContent = level;
+    startTime = performance.now();
+    hideOverlay();
+  }
+
+  // DRAW (unchanged visuals)
+  function draw(){
+    for (let y=0;y<rows;y++){
+      for (let x=0;x<cols;x++){
+        const t = map[idx(x,y)];
+        const sx = x * tileSize;
+        const sy = y * tileSize;
+        if (t === 0) {
+          if ((x + Math.floor(Date.now()/600)) % 2 === 0) ctx.fillStyle = '#0277bd'; else ctx.fillStyle = '#039be5';
+          ctx.fillRect(sx,sy,tileSize,tileSize);
+        } else if (t === 1) {
+          ctx.fillStyle = '#f4d58d';
+          ctx.fillRect(sx,sy,tileSize,tileSize);
+        } else if (t === 2) {
+          ctx.fillStyle = '#7bb661';
+          ctx.fillRect(sx,sy,tileSize,tileSize);
+        } else if (t === 3) {
+          ctx.fillStyle = '#6b6b6b';
+          ctx.fillRect(sx,sy,tileSize,tileSize);
+          ctx.fillStyle = '#8a8a8a';
+          ctx.fillRect(sx + Math.floor(tileSize*0.18), sy + Math.floor(tileSize*0.18), Math.max(6, Math.floor(tileSize*0.35)), Math.max(4, Math.floor(tileSize*0.18)));
+        } else if (t === 4) {
+          ctx.fillStyle = '#f4d58d';
+          ctx.fillRect(sx,sy,tileSize,tileSize);
+          // trunk
+          ctx.fillStyle = '#5d4037';
+          ctx.fillRect(sx + Math.floor(tileSize*0.45), sy + Math.floor(tileSize*0.27), Math.max(2, Math.floor(tileSize*0.08)), Math.floor(tileSize*0.22));
+          // leaves
+          ctx.fillStyle = '#2e7d32';
+          ctx.fillRect(sx + Math.floor(tileSize*0.18), sy + Math.floor(tileSize*0.08), Math.floor(tileSize*0.64), Math.floor(tileSize*0.18));
+        }
+      }
+    }
+
+    // treasure
+    ctx.fillStyle = '#e6b800';
+    ctx.fillRect(treasure.x, treasure.y, treasure.size, treasure.size);
+    ctx.fillStyle = '#7f5e00';
+    ctx.fillRect(treasure.x + Math.floor(treasure.size*0.16), treasure.y + Math.floor(treasure.size*0.22), Math.floor(treasure.size*0.7), Math.max(3, Math.floor(treasure.size*0.16)));
+    ctx.fillRect(treasure.x + Math.floor(treasure.size/2) - 1, treasure.y + 2, 2, treasure.size - 4);
+
+    // enemies
+    for (let e of enemies){
+      ctx.fillStyle = '#c62828';
+      ctx.fillRect(e.x, e.y, e.w, e.h);
+      ctx.fillStyle = '#8b0000';
+      ctx.fillRect(e.x + Math.max(1, Math.floor(e.w*0.08)), e.y, Math.max(2, Math.floor(e.w*0.12)), Math.max(2, Math.floor(e.h*0.12)));
+    }
+
+    // player
+    ctx.fillStyle = '#1565c0';
+    ctx.fillRect(player.x, player.y, player.size, player.size);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(player.x + Math.max(2, Math.floor(player.size*0.12)), player.y + Math.max(2, Math.floor(player.size*0.12)), Math.max(2, Math.floor(player.size*0.12)), Math.max(2, Math.floor(player.size*0.12)));
+    ctx.fillRect(player.x + player.size - Math.max(6, Math.floor(player.size*0.32)), player.y + Math.max(2, Math.floor(player.size*0.12)), Math.max(2, Math.floor(player.size*0.12)), Math.max(2, Math.floor(player.size*0.12)));
+  }
+
+  // UPDATE (honors paused)
+  function update(delta){
+    if (gameOver || paused) return;
+
+    let vx = 0, vy = 0;
+    if (keys['ArrowLeft']) vx -= player.speed;
+    if (keys['ArrowRight']) vx += player.speed;
+    if (keys['ArrowUp']) vy -= player.speed;
+    if (keys['ArrowDown']) vy += player.speed;
+
+    if (vx !== 0 || vy !== 0){
+      const prevX = player.x, prevY = player.y;
+      if (vx !== 0){
+        player.x += vx;
+        if (rectCollidesSolid(player.x, player.y, player.size, player.size)){
+          player.x = prevX;
+        } else {
+          moves++;
+          document.getElementById('moves').textContent = moves;
+        }
+      }
+      if (vy !== 0){
+        player.y += vy;
+        if (rectCollidesSolid(player.x, player.y, player.size, player.size)){
+          player.y = prevY;
+        } else {
+          if (vx === 0) { moves++; document.getElementById('moves').textContent = moves; }
+        }
+      }
+    }
+
+    // treasure collision
+    if (rectsOverlap(player.x, player.y, player.size, player.size, treasure.x, treasure.y, treasure.size, treasure.size)){
+      // show big overlay and pause
+      levelFound();
+      return;
+    }
+
+    // enemies update
+    for (let e of enemies){
+      e.cooldown -= delta;
+      if (e.cooldown <= 0){
+        const ang = Math.random() * Math.PI * 2;
+        e.vx = Math.cos(ang) * e.speed * (0.8 + Math.random()*0.8);
+        e.vy = Math.sin(ang) * e.speed * (0.8 + Math.random()*0.8);
+        e.cooldown = 0.8 + Math.random()*1.8;
+      }
+      const nx = e.x + e.vx;
+      const ny = e.y + e.vy;
+      if (!rectCollidesSolid(nx, ny, e.w, e.h)){
+        e.x = nx; e.y = ny;
+      } else {
+        e.vx *= -1; e.vy *= -1;
+      }
+      if (rectsOverlap(e.x, e.y, e.w, e.h, player.x, player.y, player.size, player.size)){
+        handlePlayerHit();
+      }
+    }
+
+    if (messageTimer > 0){
+      messageTimer -= delta;
+      if (messageTimer <= 0) document.getElementById('message').textContent = '';
+    }
+
+    const now = performance.now();
+    document.getElementById('time').textContent = ((now - startTime)/1000).toFixed(1);
+  }
+
+  function rectsOverlap(x1,y1,w1,h1, x2,y2,w2,h2){
+    return !(x1 + w1 <= x2 || x1 >= x2 + w2 || y1 + h1 <= y2 || y1 >= y2 + h2);
+  }
+
+  function handlePlayerHit(){
+    if (gameOver) return;
+    lives--;
+    document.getElementById('lives').textContent = lives;
+    document.getElementById('message').textContent = '¡Te ha alcanzado un cranc!';
+    messageTimer = 2.0;
+    // teleport to left sand tile
+    let placed = false;
+    for (let x=2; x<cols; x++){
+      for (let y=2; y<rows-2; y++){
+        if (map[idx(x,y)] === 1){
+          player.x = x * tileSize + 2;
+          player.y = y * tileSize + 2;
+          placed = true; break;
+        }
+      }
+      if (placed) break;
+    }
+    if (!placed) { player.x = Math.floor(cols/2)*tileSize; player.y = Math.floor(rows/2)*tileSize; }
+    if (lives <= 0) loseGame();
+  }
+
+  // Called when treasure is found
+  function levelFound(){
+    paused = true;
+    // Show overlay and set msg
+    const overlay = document.getElementById('levelOverlay');
+    const title = document.getElementById('levelTitle');
+    const msg = document.getElementById('levelMsg');
+    title.textContent = '¡Has encontrado el tesoro!';
+    msg.textContent = `Nivel ${level} completado`;
+    overlay.style.display = 'flex';
+    overlay.setAttribute('aria-hidden', 'false');
+    // update HUD message too
+    document.getElementById('message').textContent = `Has completado el nivel ${level}!`;
+  }
+
+  function hideOverlay(){
+    const overlay = document.getElementById('levelOverlay');
+    overlay.style.display = 'none';
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+
+  function continueToNextLevel(){
+    level++;
+    document.getElementById('level').textContent = level;
+    // regenerate with slightly more difficulty (placeObstacles/spawnEnemies use level)
+    generateIsland();
+    placeObstacles();
+    // place player again on left sand tile
+    let placed = false;
+    for (let x=2; x<cols; x++){
+      for (let y=2; y<rows-2; y++){
+        const t = map[idx(x,y)];
+        if (t === 1) {
+          player.x = x * tileSize + 2;
+          player.y = y * tileSize + 2;
+          placed = true; break;
+        }
+      }
+      if (placed) break;
+    }
+    if (!placed) { player.x = Math.floor(cols/2) * tileSize; player.y = Math.floor(rows/2) * tileSize; }
+    placeTreasure();
+    spawnEnemies();
+    moves = 0;
+    document.getElementById('moves').textContent = moves;
+    startTime = performance.now();
+    paused = false;
+    document.getElementById('message').textContent = '';
+    hideOverlay();
+  }
+
+  function loseGame(){
+    gameOver = true;
+    paused = true;
+    document.getElementById('message').textContent = 'Has perdido todas las vidas. Juego terminado.';
+    // reuse overlay to show menu
+    const overlay = document.getElementById('levelOverlay');
+    const title = document.getElementById('levelTitle');
+    const msg = document.getElementById('levelMsg');
+    title.textContent = 'Fin del juego';
+    msg.textContent = 'Has perdido todas las vidas. Volver al menú para intentarlo de nuevo.';
+    overlay.style.display = 'flex';
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+
+  function flashFinish(){
+    // small pixel flash around treasure (kept for retro feel)
+    let t = 0;
+    const dur = 40;
+    const tx = Math.floor(treasure.x / tileSize), ty = Math.floor(treasure.y / tileSize);
+    const orig = [];
+    for (let oy=-1; oy<=1; oy++){
+      for (let ox=-1; ox<=1; ox++){
+        const cxp = tx + ox, cyp = ty + oy;
+        if (inBounds(cxp,cyp)) orig.push({x:cxp,y:cyp, val: map[idx(cxp,cyp)]});
+      }
+    }
+    const iv = setInterval(()=>{
+      for (let i=0;i<3;i++){
+        const a = orig[Math.floor(Math.random()*orig.length)];
+        const sx = a.x * tileSize, sy = a.y * tileSize;
+        ctx.fillStyle = (Math.random() > 0.5) ? '#fff176' : '#ff8a65';
+        ctx.fillRect(sx, sy, tileSize, tileSize);
+      }
+      t++;
+      if (t > dur) clearInterval(iv);
+    }, 28);
+  }
+
+  // MAIN LOOP
+  let last = performance.now();
+  function loop(now){
+    const delta = (now - last) / 1000;
+    last = now;
+    update(delta);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // Input
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) { keys[e.key] = true; e.preventDefault(); }
+    if (e.key === 'r' || e.key === 'R') resetGame(true);
+  });
+  window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+  document.querySelectorAll('.btn-dir').forEach(btn=>{
+    const dir = btn.dataset.dir;
+    const mapKey = { up:'ArrowUp', down:'ArrowDown', left:'ArrowLeft', right:'ArrowRight' }[dir];
+    const start = (ev) => { ev.preventDefault(); keys[mapKey] = true; moves++; document.getElementById('moves').textContent = moves; };
+    const stop = (ev) => { ev && ev.preventDefault(); keys[mapKey] = false; };
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointercancel', stop);
+    btn.addEventListener('pointerleave', stop);
+  });
+
+  window.addEventListener('keydown', (e) => { if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault(); });
+
+  document.getElementById('restartBtn').addEventListener('click', () => resetGame(true));
+  document.getElementById('continueBtn').addEventListener('click', () => {
+    // continue to next level
+    flashFinish();
+    setTimeout(()=> continueToNextLevel(), 700); // small delay to let flash run
+  });
+  document.getElementById('menuBtn').addEventListener('click', () => {
+    resetGame(true);
+  });
+
+  // Start first level
+  resetGame(true);
+  requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

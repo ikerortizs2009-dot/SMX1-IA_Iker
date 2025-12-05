@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Caída de Frutas — Menú con selección por clic</title>
+<style>
+  :root{--bg:#eaf8ff;--panel:#ffffff;--accent:#ff6f00;--text:#16313a}
+  html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}
+  .wrap{max-width:1024px;margin:18px auto;padding:16px}
+  header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  h1{font-size:1.2rem;margin:0}
+  #hud{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .badge{background:var(--panel);padding:8px 10px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,0.06);font-weight:700}
+  #gameCanvas{display:block;margin:12px auto;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,0.08);background:transparent}
+  #controls{font-size:0.95rem;color:#274142;margin-top:8px;text-align:center}
+  #overlay{position:fixed;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .panel{background:var(--panel);padding:18px;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.18);pointer-events:auto;max-width:640px;text-align:center}
+  .menu{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+  .menu button{padding:12px 14px;font-size:1rem}
+  .big-notice{font-size:2rem;font-weight:800;margin:6px 0}
+  .sub-notice{font-size:1.05rem;color:#3b4b4b;margin-top:6px}
+  #toast{position:fixed;left:50%;transform:translateX(-50%);top:18px;background:rgba(0,0,0,0.8);color:#fff;padding:10px 16px;border-radius:10px;font-weight:700;pointer-events:none;opacity:0;transition:opacity 220ms, transform 220ms}
+  footer{margin-top:12px;font-size:0.85rem;color:#385047;text-align:center}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Caída de Frutas</h1>
+      <div id="hud">
+        <div class="badge">Puntos: <strong id="score">0</strong></div>
+        <div class="badge">Vidas: <strong id="lives">3</strong></div>
+        <div class="badge">Nivel: <strong id="level">1</strong></div>
+        <div class="badge">Vel: <strong id="speed">1.0×</strong></div>
+        <div class="badge" id="objectiveBadge" style="display:none">Objetivo: <strong id="objectiveText"></strong></div>
+        <div class="badge" id="aiBadge" style="display:none">IA: <strong id="aiText"></strong></div>
+      </div>
+    </header>
+
+    <canvas id="gameCanvas" width="1024" height="600"></canvas>
+
+    <div id="controls">Mover: ← →. Usa el menú para seleccionar cómo empezar (clic con ratón).</div>
+
+    <footer>Recomendado: Chrome / Edge / Firefox modernos.</footer>
+  </div>
+
+  <div id="overlay"></div>
+  <div id="toast" aria-hidden="true"></div>
+
+<script>
+// Este archivo es la versión que restaura las mecánicas previas
+// y añade un menú en la pantalla de inicio con botones clicables:
+// - Jugar normal
+// - Ir directamente a Nivel 3 (objetivo)
+// - Ir directamente a Competición final (Nivel 4)
+// Al hacer click con el ratón se entra en la modalidad solicitada.
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const scoreEl = document.getElementById('score');
+const livesEl = document.getElementById('lives');
+const levelEl = document.getElementById('level');
+const speedEl = document.getElementById('speed');
+const overlay = document.getElementById('overlay');
+const toast = document.getElementById('toast');
+const objectiveBadge = document.getElementById('objectiveBadge');
+const objectiveText = document.getElementById('objectiveText');
+const aiBadge = document.getElementById('aiBadge');
+const aiText = document.getElementById('aiText');
+
+const W = canvas.width, H = canvas.height;
+let visualScale = 1.08;
+
+const baseBasket = { w:150, h:44, speed:8 };
+const playerBasket = { w: baseBasket.w*visualScale, h: baseBasket.h*visualScale, x: W/2 - (baseBasket.w*visualScale)/2, y: H-90, speed: baseBasket.speed };
+const aiBasket = { w: baseBasket.w*0.9*visualScale, h: baseBasket.h*0.9*visualScale, x: W/2 - (baseBasket.w*0.9*visualScale)/2, y: H-220, speed: 5.2 };
+
+let left=false, right=false;
+let score=0, lives=3, level=1;
+let items=[];
+let spawnInterval=900, lastSpawn=0, baseFall=1.2;
+let baseBombProbability=0.12;
+let lastTime = performance.now();
+let badFlash = 0;
+
+// Level 3 objective
+let level3Active=false, playerTarget=null, playerRequired=0, playerCollected=0;
+
+// Level 4 competition
+let level4Active=false, compRequired=0, compPlayer=0, compAI=0;
+let confettiParticles=[], confettiActive=false, confettiEnd=0;
+let cryParticles=[], cryActive=false, cryEnd=0;
+
+const FRUITS = [
+  {name:'manzana', r:24, color:'#d32f2f', value:1},
+  {name:'naranja', r:22, color:'#ff8f00', value:1},
+  {name:'plátano', r:32, color:'#fdd835', value:1},
+  {name:'uva', r:16, color:'#7b1fa2', value:2},
+  {name:'pera', r:22, color:'#8bc34a', value:1},
+  {name:'fresa', r:20, color:'#ef5350', value:2},
+  {name:'mango', r:26, color:'#ffb74d', value:2},
+  {name:'kiwi', r:22, color:'#6aa84f', value:2},
+  {name:'cereza', r:12, color:'#c62828', value:1},
+  {name:'melón', r:26, color:'#c5e1a5', value:2}
+];
+const BOMBS = [{name:'bomba', r:18, color:'#222'}];
+
+function rand(min,max){ return Math.floor(Math.random()*(max-min+1))+min; }
+
+/* ---------- UI helpers ---------- */
+function showToast(text, ms=1400){
+  toast.textContent = text;
+  toast.style.opacity = '1';
+  toast.style.transform = 'translateX(-50%) translateY(0)';
+  toast.setAttribute('aria-hidden','false');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>{
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(-50%) translateY(-8px)';
+    toast.setAttribute('aria-hidden','true');
+  }, ms);
+}
+
+/* ---------- START MENU with clickable choices ---------- */
+function showStartMenu(){
+  overlay.style.pointerEvents = 'auto';
+  overlay.innerHTML = `
+    <div class="panel" role="dialog" aria-modal="true">
+      <h2>Caída de Frutas</h2>
+      <p>Elige cómo quieres empezar — haz clic con el ratón en la opción:</p>
+      <div class="menu">
+        <button id="btn-normal">Jugar normal</button>
+        <button id="btn-level3">Entrar en Nivel 3 (objetivo)</button>
+        <button id="btn-level4">Competición final (Nivel 4)</button>
+      </div>
+      <div style="margin-top:10px"><button id="howBtn" class="muted">Cómo jugar</button></div>
+    </div>
+  `;
+  document.getElementById('btn-normal').addEventListener('click', startNormalMode);
+  document.getElementById('btn-level3').addEventListener('click', startLevel3Mode);
+  document.getElementById('btn-level4').addEventListener('click', startLevel4Mode);
+  document.getElementById('howBtn').addEventListener('click', ()=> {
+    alert('Jugar normal: empieza el juego.\nNivel 3: activarás el objetivo desde el inicio.\nNivel 4: competición final contra la IA desde el inicio.');
+  });
+}
+
+/* ---------- Game start functions for each menu entry ---------- */
+function resetAllVars(){
+  score = 0; lives = 3; level = 1;
+  items = [];
+  spawnInterval = 900; baseFall = 1.2; baseBombProbability = 0.12;
+  level3Active = false; playerTarget = null; playerRequired = 0; playerCollected = 0;
+  level4Active = false; compRequired = 0; compPlayer = 0; compAI = 0;
+  confettiParticles = []; confettiActive = false; cryParticles=[]; cryActive=false;
+  playerBasket.x = W/2 - playerBasket.w/2;
+  aiBasket.x = W/2 - aiBasket.w/2;
+  objectiveBadge.style.display='none'; aiBadge.style.display='none';
+  updateHUD();
+}
+
+function startNormalMode(){
+  resetAllVars();
+  overlay.innerHTML=''; overlay.style.pointerEvents='none';
+  gameState = 'running';
+  lastSpawn = performance.now(); lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+function startLevel3Mode(){
+  resetAllVars();
+  // start running then immediately activate level3 objective
+  overlay.innerHTML=''; overlay.style.pointerEvents='none';
+  gameState = 'running';
+  lastSpawn = performance.now(); lastTime = performance.now();
+  // set level 3 objective immediately
+  level = 3;
+  level3Active = true;
+  const idx = Math.floor(Math.random()*FRUITS.length);
+  playerTarget = FRUITS[idx].name;
+  playerRequired = rand(6, 10);
+  playerCollected = 0;
+  spawnInterval = Math.max(220, spawnInterval - 80);
+  baseFall += 0.22;
+  showToast(`Nivel 3: recoge ${playerRequired} ${playerTarget}`, 1800);
+  updateHUD();
+  requestAnimationFrame(loop);
+}
+
+function startLevel4Mode(){
+  resetAllVars();
+  overlay.innerHTML=''; overlay.style.pointerEvents='none';
+  // start and immediately go to competition final
+  gameState = 'running_level4';
+  level4Active = true;
+  // choose target fruit randomly and required
+  const idx = Math.floor(Math.random()*FRUITS.length);
+  playerTarget = FRUITS[idx].name;
+  compRequired = rand(6,10);
+  compPlayer = 0; compAI = 0;
+  playerRequired = compRequired; // track for HUD consistency
+  objectiveBadge.style.display='inline-block';
+  aiBadge.style.display='inline-block';
+  updateHUD();
+  showToast(`Competición: recoge ${compRequired} ${playerTarget}`, 1800);
+  lastSpawn = performance.now(); lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+/* ---------- HUD ---------- */
+function updateHUD(){
+  scoreEl.textContent = score;
+  livesEl.textContent = lives;
+  levelEl.textContent = level;
+  speedEl.textContent = (1 + (Math.max(0,level-1))*0.15).toFixed(2) + '×';
+  if(level3Active){
+    objectiveBadge.style.display='inline-block';
+    objectiveText.textContent = `${playerCollected}/${playerRequired} ${playerTarget}`;
+  } else if(level4Active){
+    objectiveBadge.style.display='inline-block';
+    objectiveText.textContent = `${compPlayer}/${compRequired} ${playerTarget}`;
+    aiBadge.style.display='inline-block';
+    aiText.textContent = `${compAI}/${compRequired} ${playerTarget}`;
+  } else {
+    objectiveBadge.style.display='none';
+    aiBadge.style.display='none';
+  }
+}
+
+/* ---------- Spawning & collision ---------- */
+function spawnItem(){
+  if(!['running','running_level4'].includes(gameState)) return;
+  const probBomb = Math.min(0.8, baseBombProbability + (level-1)*0.07);
+  const isBomb = Math.random() < probBomb;
+  const x = Math.random()*(W-120)+60;
+  const baseSpeed = baseFall + (level-1)*0.12;
+  const speed = baseSpeed + Math.random()*1.1;
+  if(isBomb){
+    const b = BOMBS[0];
+    items.push({x,y:-40,r: b.r*visualScale, isBomb:true, color:b.color, fallSpeed:speed, name:b.name});
+  } else {
+    const f = FRUITS[Math.floor(Math.random()*FRUITS.length)];
+    items.push({x,y:-40,r: f.r*visualScale, isBomb:false, color:f.color, name:f.name, value:f.value, fallSpeed:speed});
+  }
+}
+
+function circleRectCollide(cx,cy,cr, rx,ry,rw,rh){
+  const closestX = Math.max(rx, Math.min(cx, rx+rw));
+  const closestY = Math.max(ry, Math.min(cy, ry+rh));
+  const dx = cx - closestX; const dy = cy - closestY;
+  return (dx*dx + dy*dy) <= (cr*cr);
+}
+
+/* ---------- Level progression helper ---------- */
+function handleLevelUp(newLevel){
+  if(newLevel > level){
+    level = newLevel;
+    updateHUD();
+    if(level === 2){
+      spawnInterval = Math.max(220, spawnInterval - 80);
+      baseFall += 0.18;
+      showToast('Nivel 2 — más bombas', 1200);
+    } else if(level === 3){
+      level3Active = true;
+      const idx = Math.floor(Math.random()*FRUITS.length);
+      playerTarget = FRUITS[idx].name;
+      playerRequired = rand(6,10);
+      playerCollected = 0;
+      spawnInterval = Math.max(220, spawnInterval - 80);
+      baseFall += 0.22;
+      showToast(`Nivel 3: recoge ${playerRequired} ${playerTarget}`, 1800);
+      updateHUD();
+    }
+  }
+}
+
+/* ---------- AI for level4 ---------- */
+function aiUpdate(dt){
+  if(!level4Active) return;
+  // move AI towards nearest target fruit of name playerTarget
+  let best=null, bestDist=1e9;
+  for(const it of items){ if(it.isBomb) continue; if(it.name !== playerTarget) continue; const dx = it.x - (aiBasket.x + aiBasket.w/2); const dy = it.y - (aiBasket.y + aiBasket.h/2); const d = Math.hypot(dx,dy); if(d < bestDist){ bestDist=d; best=it; } }
+  const targetX = best ? Math.max(8, Math.min(W - aiBasket.w - 8, best.x - aiBasket.w/2)) : aiBasket.x;
+  const dir = targetX - aiBasket.x;
+  const move = Math.sign(dir) * aiBasket.speed * (1 + Math.max(0, level-3)*0.08) * (dt/16.67);
+  if(Math.abs(dir) <= Math.abs(move)) aiBasket.x = targetX; else aiBasket.x += move;
+  aiBasket.x = Math.max(8, Math.min(W - aiBasket.w - 8, aiBasket.x));
+}
+
+/* ---------- Confetti & cries ---------- */
+function spawnConfetti(big=false){
+  confettiParticles = [];
+  confettiActive = true;
+  confettiEnd = performance.now() + 3500;
+  const count = big ? 200 : 80;
+  for(let i=0;i<count;i++){
+    confettiParticles.push({
+      x: Math.random()*W,
+      y: -10 - Math.random()*160,
+      vx: (Math.random()-0.5)*6,
+      vy: 2 + Math.random()*4,
+      size: big ? 4 + Math.random()*7 : 2 + Math.random()*4,
+      color: ['#ff3b3b','#ffd700','#4caf50','#2196f3','#e91e63','#ff9800','#9c27b0'][Math.floor(Math.random()*7)]
+    });
+  }
+  requestAnimationFrame(confettiAnimate);
+}
+function confettiAnimate(){
+  for(const p of confettiParticles){ p.x += p.vx; p.y += p.vy; p.vy += 0.06; p.vx *= 0.995; }
+  confettiParticles = confettiParticles.filter(p => p.y < H + 200);
+  if(performance.now() < confettiEnd || confettiParticles.length) requestAnimationFrame(confettiAnimate);
+  else confettiActive = false;
+}
+function spawnCries(){
+  cryParticles = []; cryActive = true; cryEnd = performance.now() + 3500;
+  for(let i=0;i<36;i++){
+    cryParticles.push({ x: Math.random()*W, y: -30 - Math.random()*180, vy: 1 + Math.random()*2 });
+  }
+  requestAnimationFrame(cryAnimate);
+}
+function cryAnimate(){
+  for(const c of cryParticles){ c.y += c.vy; c.vy += 0.04; }
+  cryParticles = cryParticles.filter(c => c.y < H + 200);
+  if(performance.now() < cryEnd || cryParticles.length) requestAnimationFrame(cryAnimate);
+  else cryActive = false;
+}
+
+/* ---------- Main update ---------- */
+let gameState = 'start'; // start | running | running_level4 | idle | gameover
+function update(dt){
+  if(!['running','running_level4'].includes(gameState)) return;
+
+  // player controls
+  if(left) playerBasket.x -= playerBasket.speed;
+  if(right) playerBasket.x += playerBasket.speed;
+  playerBasket.x = Math.max(8, Math.min(W - playerBasket.w - 8, playerBasket.x));
+
+  // spawn
+  const now = performance.now();
+  if(now - lastSpawn > spawnInterval) { spawnItem(); lastSpawn = now; }
+
+  // AI update if in competition
+  if(gameState === 'running_level4') aiUpdate(dt);
+
+  // update items
+  for(let i=items.length-1;i>=0;i--){
+    const it = items[i];
+    it.fallSpeed += 0.012 * (1 + Math.max(0,level-1)*0.05);
+    it.y += it.fallSpeed * (1 + Math.max(0,level-1)*0.04);
+
+    // player catch
+    if(circleRectCollide(it.x, it.y, it.r, playerBasket.x, playerBasket.y, playerBasket.w, playerBasket.h)){
+      if(it.isBomb){
+        lives -= 1; badFlash = 0.9;
+        if(lives <= 0){ lives = 0; updateHUD(); showGameOver(); return; }
+      } else {
+        if(level3Active && !level4Active){
+          // level 3 objective phase
+          if(it.name === playerTarget){
+            playerCollected += 1; score += it.value;
+            updateHUD();
+            if(playerCollected >= playerRequired){
+              // Begin level 4 competition after a short notice
+              level3Active = false;
+              updateHUD();
+              overlay.style.pointerEvents = 'auto';
+              overlay.innerHTML = `<div class="panel"><div class="big-notice">¡Competición final!</div><div class="sub-notice">Ronda contra la IA. Ambos competiréis por <strong>${playerRequired}</strong> ${playerTarget}.</div></div>`;
+              setTimeout(()=>{
+                overlay.innerHTML = ''; overlay.style.pointerEvents='none';
+                // init competition
+                level4Active = true;
+                gameState = 'running_level4';
+                compRequired = playerRequired;
+                compPlayer = playerCollected;
+                compAI = 0;
+                updateHUD();
+              }, 1300);
+            }
+          } else {
+            // penalty
+            lives -= 1; badFlash = 0.9;
+            showToast(`No es ${playerTarget}. -1 vida`,900);
+            if(lives <= 0){ lives = 0; updateHUD(); showGameOver(); return; }
+          }
+        } else if(gameState === 'running_level4'){
+          // competition: only target counts, other fruits penalize
+          if(it.name === playerTarget){
+            compPlayer += 1; score += it.value;
+            updateHUD();
+            if(compPlayer >= compRequired){
+              // player wins
+              spawnConfetti(true);
+              setTimeout(()=> showEnd(true), 1100);
+              gameState = 'idle';
+              items.splice(i,1);
+              return;
+            }
+          } else {
+            lives -= 1; badFlash = 0.9;
+            showToast(`No es ${playerTarget}. -1 vida`,800);
+            if(lives <= 0){ lives = 0; updateHUD(); showGameOver(); return; }
+          }
+        } else {
+          // normal progression (levels 1-2)
+          score += it.value;
+          const newLevel = Math.floor(score/10) + 1;
+          if(newLevel > level) handleLevelUp(newLevel);
+        }
+      }
+      items.splice(i,1);
+      updateHUD();
+      continue;
+    }
+
+    // AI catch in competition
+    if(gameState === 'running_level4' && !it.isBomb && it.name === playerTarget){
+      if(circleRectCollide(it.x, it.y, it.r, aiBasket.x, aiBasket.y, aiBasket.w, aiBasket.h)){
+        compAI += 1;
+        items.splice(i,1);
+        updateHUD();
+        if(compAI >= compRequired){
+          // AI wins
+          spawnCries();
+          setTimeout(()=> showEnd(false), 900);
+          gameState = 'idle';
+          return;
+        }
+        continue;
+      }
+    }
+
+    // remove off screen
+    if(it.y - it.r > H + 80) items.splice(i,1);
+  }
+}
+
+/* ---------- Draw utilities (simplified from earlier realistic draws) ---------- */
+function drawBackground(){
+  const sky = ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,'#bfefff'); sky.addColorStop(0.6,'#eaf8ff'); sky.addColorStop(1,'#ddfbe8');
+  ctx.fillStyle = sky; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = '#cfe9d5';
+  ctx.beginPath(); ctx.moveTo(0,H*0.65); ctx.quadraticCurveTo(W*0.2,H*0.45,W*0.5,H*0.66); ctx.quadraticCurveTo(W*0.72,H*0.86,W,H*0.6); ctx.lineTo(W,H); ctx.lineTo(0,H); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.95)'; drawCloud(140,80,48); drawCloud(420,60,68); drawCloud(760,90,56); drawCloud(920,70,44);
+  ctx.fillStyle='#eaf7ec'; ctx.fillRect(0,H-106,W,106);
+}
+function drawCloud(x,y,size){ ctx.beginPath(); ctx.ellipse(x,y,size*0.9,size*0.6,0,0,Math.PI*2); ctx.ellipse(x + size*0.6,y + 6,size*0.7,size*0.5,0,0,Math.PI*2); ctx.fill(); }
+
+function drawBasket(b){
+  ctx.save();
+  const x=b.x, y=b.y, w=b.w, h=b.h;
+  ctx.fillStyle='rgba(0,0,0,0.12)';
+  ctx.beginPath(); ctx.ellipse(x+w/2, y+h+26, w/2, 14,0,0,Math.PI*2); ctx.fill();
+  const grad = ctx.createLinearGradient(x,y,x,y+h);
+  grad.addColorStop(0,'#e1b58a'); grad.addColorStop(1,'#7a4a28');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.moveTo(x, y + 12); ctx.quadraticCurveTo(x + w*0.5, y + h + 30, x + w, y + 12); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#cfcfcf'; ctx.beginPath(); ctx.moveTo(x-1,y+8); ctx.quadraticCurveTo(x + w*0.5, y - 16, x + w +1, y+8); ctx.lineTo(x + w +1, y+14); ctx.lineTo(x-1,y+14); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.06)'; ctx.lineWidth=1;
+  for(let i=0;i<6;i++){ const t=i/5; ctx.beginPath(); ctx.moveTo(x + 8, y + 14 + t*(h-10)); ctx.quadraticCurveTo(x + w*0.5, y + 18 + t*(h+6), x + w - 8, y + 14 + t*(h-10)); ctx.stroke(); }
+  ctx.strokeStyle='#5a3720'; ctx.lineWidth=Math.max(4, visualScale*5); ctx.beginPath(); ctx.moveTo(x+18,y+10); ctx.quadraticCurveTo(x + w*0.5, y - 62, x + w - 18, y + 10); ctx.stroke();
+  ctx.restore();
+}
+
+function drawItem(it){
+  if(it.isBomb) { drawBomb(it.x,it.y,it.r,it.color); return; }
+  switch(it.name){
+    case 'manzana': drawApple(it.x,it.y,it.r,it.color); break;
+    case 'naranja': drawOrange(it.x,it.y,it.r,it.color); break;
+    case 'plátano': drawBanana(it.x,it.y,it.r,it.color); break;
+    default: ctx.fillStyle = it.color; ctx.beginPath(); ctx.arc(it.x,it.y,it.r,0,Math.PI*2); ctx.fill();
+  }
+}
+function drawBomb(x,y,r,color){ ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#111'; ctx.lineWidth=Math.max(1,r*0.06); ctx.beginPath(); ctx.moveTo(x + r*0.6, y - r*0.6); ctx.lineTo(x + r*0.95, y - r*0.95); ctx.stroke(); }
+function drawApple(x,y,r,color){ const g = ctx.createRadialGradient(x - r*0.28, y - r*0.4, r*0.12, x, y, r*1.05); g.addColorStop(0,'#fff9f9'); g.addColorStop(0.18,'#ffb0b0'); g.addColorStop(0.6,color); g.addColorStop(1, shade(color,-24)); ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(x,y,r,r*0.92); ctx.fill(); ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.beginPath(); ctx.ellipse(x - r*0.28, y - r*0.45, r*0.28, r*0.14, -0.6,0,Math.PI*2); ctx.fill(); }
+function drawOrange(x,y,r,color){ const g=ctx.createRadialGradient(x - r*0.18, y - r*0.18, r*0.12, x, y, r); g.addColorStop(0,'#fff8ec'); g.addColorStop(0.25,'#ffd9a8'); g.addColorStop(0.7,color); g.addColorStop(1, shade(color,-20)); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill(); }
+function drawBanana(x,y,r,color){ ctx.save(); ctx.translate(x,y); ctx.rotate(-0.42); const w=r*1.9,h=r*0.9; const g=ctx.createLinearGradient(-w/2,0,w/2,0); g.addColorStop(0,'#fff9d1'); g.addColorStop(0.4,color); g.addColorStop(1, shade(color,-30)); ctx.fillStyle=g; ctx.beginPath(); ctx.moveTo(-w/2,0); ctx.quadraticCurveTo(-w/6, -h*1.6, w/6, -h*1.6); ctx.quadraticCurveTo(w/2,0,w/6,h*1.2); ctx.quadraticCurveTo(-w/6,h*1.2,-w/2,0); ctx.fill(); ctx.restore(); }
+
+/* Confetti & cries rendering */
+function renderConfetti(){
+  for(const p of confettiParticles){ ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size*1.6); }
+}
+function renderCries(){
+  ctx.font = '36px serif'; ctx.textAlign='center';
+  for(const c of cryParticles) ctx.fillText('😢', c.x, c.y);
+}
+
+/* ---------- Start / end helpers ---------- */
+function showGameOver(){ gameState='gameover'; overlay.style.pointerEvents='auto'; overlay.innerHTML = `<div class="panel"><h2>Game Over</h2><p>Puntos finales: ${score}</p><div style="display:flex;gap:12px;justify-content:flex-end;margin-top:12px"><button id="restartBtn">Volver a jugar</button></div></div>`; document.getElementById('restartBtn').addEventListener('click', init); }
+
+function showEnd(playerWon){
+  // playerWon true => confetti big already spawned; false => cries spawned
+  overlay.style.pointerEvents='auto';
+  if(playerWon){
+    overlay.innerHTML = `<div class="panel"><div class="big-notice">¡Has ganado la competición!</div><div class="sub-notice">Felicidades — confetis para ti.</div><div style="display:flex;gap:12px;justify-content:flex-end;margin-top:12px"><button id="restartBtn">Jugar de nuevo</button></div></div>`;
+  } else {
+    overlay.innerHTML = `<div class="panel"><div class="big-notice">Has perdido</div><div class="sub-notice">La IA ganó la ronda final.</div><div style="display:flex;gap:12px;justify-content:flex-end;margin-top:12px"><button id="restartBtn">Intentar otra vez</button></div></div>`;
+  }
+  document.getElementById('restartBtn').addEventListener('click', init);
+}
+
+/* ---------- Main draw & loop ---------- */
+function draw(){
+  if(gameState === 'start'){ drawStartScene(); return; }
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+  for(const it of items) drawItem(it);
+  drawBasket(playerBasket);
+  if(level4Active) drawBasket(aiBasket);
+  if(confettiActive) renderConfetti();
+  if(cryActive) renderCries();
+  if(badFlash > 0.01){ ctx.fillStyle = `rgba(255,0,0,${badFlash*0.18})`; ctx.fillRect(0,0,W,H); badFlash *= 0.9; }
+}
+
+let lastFrame = performance.now();
+function loop(now){
+  const dt = now - lastFrame;
+  lastFrame = now;
+  update(dt);
+  draw();
+  if(confettiActive){ /* confetti animated separately */ }
+  if(cryActive){ /* cries animated separately */ }
+  if(['running','running_level4'].includes(gameState)) requestAnimationFrame(loop);
+}
+
+/* ---------- Start scene drawing ---------- */
+let startTick=0;
+function drawStartScene(){
+  ctx.clearRect(0,0,W,H);
+  const sky = ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,'#dff6ff'); sky.addColorStop(1,'#eaf8ff');
+  ctx.fillStyle = sky; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = '#eaf7ec'; ctx.fillRect(0,H-140,W,140);
+  startTick += 0.02;
+  drawBigApple(170,230 + Math.sin(startTick)*6,120,'¡Atrapa!');
+  drawBigBanana(W/2,210 + Math.cos(startTick*0.9)*6,150,'Pulsa INICIAR');
+  drawBigOrange(W - 170,240 + Math.sin(startTick*1.1)*5,110,'¡A jugar!');
+  ctx.fillStyle='rgba(20,30,30,0.88)'; ctx.font = '22px Inter, sans-serif'; ctx.textAlign='center';
+  ctx.fillText('Pulsa una opción del menú (clic) para entrar en el modo deseado', W/2, H - 48);
+}
+function drawBigApple(x,y,R,label){ const g = ctx.createRadialGradient(x - R*0.22, y - R*0.45, R*0.12, x, y, R); g.addColorStop(0,'#fff3f3'); g.addColorStop(0.2,'#ff9a9a'); g.addColorStop(0.8,'#d32f2f'); g.addColorStop(1,'#8b1f1f'); ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(x,y,R,R*0.95,0,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#111'; ctx.beginPath(); ctx.arc(x - R*0.22, y - R*0.08, R*0.08,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(x + R*0.18, y - R*0.06, R*0.08,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='rgba(0,0,0,0.45)'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(x,y + R*0.1, R*0.28, 0.18*Math.PI, 0.82*Math.PI); ctx.stroke(); ctx.fillStyle='#111'; ctx.font = `${Math.max(14,R*0.12)}px Inter`; ctx.textAlign='center'; ctx.fillText(label,x,y + R*0.68); }
+function drawBigBanana(x,y,R,label){ ctx.save(); ctx.translate(x,y); ctx.rotate(-0.2); const w=R*1.6,h=R*0.9; const g=ctx.createLinearGradient(-w/2,0,w/2,0); g.addColorStop(0,'#fff7c9'); g.addColorStop(0.5,'#fdd835'); g.addColorStop(1,'#cda400'); ctx.fillStyle=g; ctx.beginPath(); ctx.moveTo(-w/2,0); ctx.quadraticCurveTo(-w/6,-h*1.4,w/6,-h*1.4); ctx.quadraticCurveTo(w/2,0,w/6,h*1.2); ctx.quadraticCurveTo(-w/6,h*1.2,-w/2,0); ctx.fill(); ctx.restore(); ctx.fillStyle='#111'; ctx.font=`${Math.max(14,R*0.12)}px Inter`; ctx.textAlign='center'; ctx.fillText(label,x,y + R*0.9); }
+function drawBigOrange(x,y,R,label){ const g=ctx.createRadialGradient(x-R*0.18,y-R*0.18,R*0.12,x,y,R); g.addColorStop(0,'#fff7ec'); g.addColorStop(0.3,'#ffbb6f'); g.addColorStop(0.85,'#ff8f00'); g.addColorStop(1,'#b25000'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,R,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#111'; ctx.font=`${Math.max(14,R*0.12)}px Inter`; ctx.textAlign='center'; ctx.fillText(label,x,y + R*0.7); }
+
+/* ---------- Engine control functions ---------- */
+function init(){
+  resetGame();
+  showStartMenu();
+  draw(); // draw initial start scene
+}
+
+/* reset game state to start values */
+function resetGame(){
+  score = 0; lives = 3; level = 1;
+  items = []; spawnInterval = 900; baseFall = 1.2; baseBombProbability = 0.12;
+  level3Active = false; playerTarget = null; playerRequired = 0; playerCollected = 0;
+  level4Active = false; compRequired = 0; compPlayer = 0; compAI = 0;
+  confettiParticles = []; cryParticles = []; confettiActive = cryActive = false;
+  objectiveBadge.style.display='none'; aiBadge.style.display='none';
+  playerBasket.x = W/2 - playerBasket.w/2; aiBasket.x = W/2 - aiBasket.w/2;
+  updateHUD();
+}
+
+/* start normal (same as previous start) */
+function startNormal(){
+  resetGame();
+  overlay.innerHTML=''; overlay.style.pointerEvents='none';
+  gameState = 'running';
+  lastSpawn = performance.now(); lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+/* startGame wrapper used by menu: identical to startNormal for clarity */
+function startGame(){
+  startNormal();
+}
+
+/* startAutomaticLevel3 used by menu: start and immediately activate objective */
+function startAutomaticLevel3(){
+  resetGame();
+  overlay.innerHTML=''; overlay.style.pointerEvents='none';
+  gameState = 'running';
+  lastSpawn = performance.now(); lastTime = performance.now();
+  // activate level3 immediately
+  level = 3; level3Active = true;
+  const idx = Math.floor(Math.random()*FRUITS.length);
+  playerTarget = FRUITS[idx].name;
+  playerRequired = rand(6,10);
+  playerCollected = 0;
+  spawnInterval = Math.max(220, spawnInterval - 80);
+  baseFall += 0.22;
+  showToast(`Nivel 3: recoge ${playerRequired} ${playerTarget}`, 1600);
+  updateHUD();
+  requestAnimationFrame(loop);
+}
+
+/* startCompetitionLevel4 used by menu: start and immediately begin competition */
+function startCompetitionLevel4(){
+  resetGame();
+  overlay.innerHTML=''; overlay.style.pointerEvents='none';
+  gameState = 'running_level4';
+  level4Active = true;
+  // choose random target and requirement
+  const idx = Math.floor(Math.random()*FRUITS.length);
+  playerTarget = FRUITS[idx].name;
+  compRequired = rand(6,10);
+  compPlayer = 0; compAI = 0;
+  objectiveBadge.style.display='inline-block'; aiBadge.style.display='inline-block';
+  updateHUD();
+  showToast(`Competición: recoge ${compRequired} ${playerTarget}`, 1600);
+  lastSpawn = performance.now(); lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+/* ---------- End-of-competition: show panel ---------- */
+function showEnd(playerWon){
+  if(playerWon){
+    spawnConfetti(true);
+  } else {
+    spawnCries();
+  }
+  showEndPanel(playerWon);
+}
+
+/* ---------- Show end panel (win/lose) ---------- */
+function showEndPanel(win){
+  overlay.style.pointerEvents='auto';
+  if(win){
+    overlay.innerHTML = `<div class="panel"><div class="big-notice">¡Victoria en la final!</div><div class="sub-notice">Has ganado la competición contra la IA.</div><div style="display:flex;gap:12px;justify-content:flex-end;margin-top:12px"><button id="restartBtn">Volver a jugar</button></div></div>`;
+  } else {
+    overlay.innerHTML = `<div class="panel"><div class="big-notice">Derrota</div><div class="sub-notice">La IA ha ganado la competición.</div><div style="display:flex;gap:12px;justify-content:flex-end;margin-top:12px"><button id="restartBtn">Intentar otra vez</button></div></div>`;
+  }
+  document.getElementById('restartBtn').addEventListener('click', init);
+}
+
+/* ---------- Menu button hook-ups (the user wanted click by mouse) ---------- */
+function showStartMenu(){
+  overlay.style.pointerEvents = 'auto';
+  overlay.innerHTML = `
+    <div class="panel">
+      <h2>Menú de inicio</h2>
+      <p>Elige con un clic lo que quieras iniciar:</p>
+      <div class="menu">
+        <button id="opt-normal">Jugar normal</button>
+        <button id="opt-level3">Iniciar Nivel 3 (objetivo)</button>
+        <button id="opt-level4">Ir a Competición final (Nivel 4)</button>
+      </div>
+      <div style="margin-top:10px"><button id="howBtn" class="muted">Cómo jugar</button></div>
+    </div>
+  `;
+  document.getElementById('opt-normal').addEventListener('click', startGame);
+  document.getElementById('opt-level3').addEventListener('click', startAutomaticLevel3);
+  document.getElementById('opt-level4').addEventListener('click', startCompetitionLevel4);
+  document.getElementById('howBtn').addEventListener('click', ()=> alert('Selecciona con el ratón una opción:\n- Jugar normal\n- Nivel 3 con objetivo\n- Competición final (nivel 4)'));
+}
+
+/* ---------- Utility: spawn confetti/cries used above ---------- */
+function spawnConfetti(big=false){
+  confettiParticles = []; confettiActive=true; confettiEnd = performance.now() + 3500;
+  const count = big ? 180 : 80;
+  for(let i=0;i<count;i++){
+    confettiParticles.push({ x: Math.random()*W, y: -20 - Math.random()*200, vx:(Math.random()-0.5)*6, vy:2 + Math.random()*4, size: big ? 4 + Math.random()*6 : 2 + Math.random()*4, color: ['#ff3b3b','#ffd700','#4caf50','#2196f3','#e91e63','#ff9800','#9c27b0'][Math.floor(Math.random()*7)] });
+  }
+  requestAnimationFrame(confettiAnimate);
+}
+function confettiAnimate(){
+  for(const p of confettiParticles){ p.x += p.vx; p.y += p.vy; p.vy += 0.06; p.vx *= 0.995; }
+  confettiParticles = confettiParticles.filter(p => p.y < H + 200);
+  if(performance.now() < confettiEnd || confettiParticles.length) requestAnimationFrame(confettiAnimate);
+  else confettiActive = false;
+}
+function spawnCries(){
+  cryParticles = []; cryActive=true; cryEnd = performance.now() + 3500;
+  for(let i=0;i<48;i++){ cryParticles.push({ x: Math.random()*W, y: -10 - Math.random()*180, vy: 1 + Math.random()*2}); }
+  requestAnimationFrame(cryAnimate);
+}
+function cryAnimate(){ for(const c of cryParticles){ c.y += c.vy; c.vy += 0.04; } cryParticles = cryParticles.filter(c => c.y < H + 200); if(performance.now() < cryEnd || cryParticles.length) requestAnimationFrame(cryAnimate); else cryActive=false; }
+
+/* ---------- Helpers used earlier (simple realistic draws reused) ---------- */
+function shade(hex, percent) {
+  const h = hex.replace('#','');
+  const num = parseInt(h,16);
+  let r = (num >> 16) + percent;
+  let g = ((num >> 8) & 0x00FF) + percent;
+  let b = (num & 0x0000FF) + percent;
+  r = Math.max(0, Math.min(255, r));
+  g = Math.max(0, Math.min(255, g));
+  b = Math.max(0, Math.min(255, b));
+  return '#' + ( (1<<24) + (r<<16) + (g<<8) + b ).toString(16).slice(1);
+}
+
+/* ---------- Initialization ---------- */
+init(); // shows menu with clickable options
+
+</script>
+</body>
+</html>
